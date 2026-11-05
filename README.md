@@ -2,8 +2,8 @@
 
 **Track every patient request across an email thread, check every AI-proposed change, and stop wrong replies before they're sent.**
 
-[![tests](https://github.com/<you>/clinic-inbox/actions/workflows/tests.yml/badge.svg)](https://github.com/<you>/clinic-inbox/actions/workflows/tests.yml)
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/<you>/clinic-inbox/blob/main/notebooks/clinic_inbox_assistant.ipynb)
+[![tests](https://github.com/ScottishTrooper/Clinic-Inbox-Assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/ScottishTrooper/Clinic-Inbox-Assistant/actions/workflows/tests.yml)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ScottishTrooper/Clinic-Inbox-Assistant/blob/main/notebooks/clinic_inbox_assistant.ipynb)
 ![Python](https://img.shields.io/badge/python-3.10%2B-1d5c78)
 ![License](https://img.shields.io/badge/license-MIT-1d5c78)
 ![Status](https://img.shields.io/badge/status-research%20prototype-9a6a12)
@@ -56,8 +56,8 @@ When model errors are injected at a 30% rate, the validator cuts wrong changes a
 **Locally:**
 
 ```bash
-git clone https://github.com/<you>/clinic-inbox.git
-cd clinic-inbox
+git clone https://github.com/ScottishTrooper/Clinic-Inbox-Assistant.git
+cd Clinic-Inbox-Assistant
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 make setup        # or: pip install -r requirements.txt
 make test         # 33 tests
@@ -118,34 +118,17 @@ Human-written test data: see [`annotation/`](annotation/) and `python -m eval.an
 ## Repository structure
 
 ```
-clinic-inbox/
-├── app/                      # the assistant
-│   ├── models.py             # data types: Request, LedgerOp, statuses, categories
-│   ├── parsing.py            # quote & signature stripping
-│   ├── redflag.py            # clinical content screen
-│   ├── llm.py                # mock / Anthropic / OpenAI backends + prompts
-│   ├── ledger.py             # validator + applying ops  ← core logic
-│   ├── reply_check.py        # reply checker + template acknowledgement
-│   ├── routing.py            # category → team
-│   ├── service.py            # pipeline, retry/review, staff actions
-│   ├── db.py                 # SQLite storage
-│   ├── main.py               # FastAPI app
-│   └── static/index.html     # staff dashboard
-├── eval/                     # evaluation code
-│   ├── synth.py              # synthetic thread generator (dev / held-out pools)
-│   ├── benchmark.py          # P/R/F1, bootstrap CIs, McNemar
-│   ├── experiments.py        # ablations + error injection
-│   ├── annotation.py         # inter-annotator agreement, human test sets
-│   ├── run_eval.py           # quick check on hand-written threads
-│   └── report.py             # HTML report
-├── data/                     # demo + synthetic threads (fictional)
-├── results/                  # generated results, figures, report
-├── annotation/               # writer brief, labelling guide, templates, examples
-├── notebooks/                # self-contained Colab notebook
-├── docs/                     # architecture, evaluation, API, figures
-├── tests/                    # 33 tests
-├── .github/workflows/        # CI: tests + benchmark smoke run
-├── Makefile · requirements.txt · LICENSE · CITATION.cff
+Clinic-Inbox-Assistant/
+├── app/              # the assistant (validator, ledger, reply checker, dashboard)
+├── eval/             # evaluation code only
+├── results/          # generated results, figures, HTML report
+├── data/             # demo + synthetic threads
+├── annotation/       # kit for human-written test data
+├── notebooks/        # the Colab notebook
+├── docs/             # ARCHITECTURE.md, EVALUATION.md, API.md, figures/
+├── tests/            # 33 tests
+├── .github/workflows/tests.yml  # runs tests automatically on every push
+├── README.md · Makefile · LICENSE (MIT) · CITATION.cff · requirements.txt
 ```
 
 ## Documentation

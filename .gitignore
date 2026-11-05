@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/app.db
+.pytest_cache/
+results/report_fragment.html
+annotation/disagreements.csv
+.DS_Store
+.ipynb_checkpoints/
