@@ -1,230 +1,185 @@
 # Clinic Inbox Assistant
 
-**Turns outpatient clinic emails into tracked, routed requests, and checks staff replies before they go out.**
+**Track every patient request across an email thread, check every AI-proposed change, and stop wrong replies before they're sent.**
 
+[![tests](https://github.com/<you>/clinic-inbox/actions/workflows/tests.yml/badge.svg)](https://github.com/<you>/clinic-inbox/actions/workflows/tests.yml)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/<you>/clinic-inbox/blob/main/notebooks/clinic_inbox_assistant.ipynb)
 ![Python](https://img.shields.io/badge/python-3.10%2B-1d5c78)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-1d5c78)
-![Tests](https://img.shields.io/badge/tests-21%20passing-2f7a4f)
-![Status](https://img.shields.io/badge/status-prototype-9a6a12)
+![License](https://img.shields.io/badge/license-MIT-1d5c78)
+![Status](https://img.shields.io/badge/status-research%20prototype-9a6a12)
 
-Patients often ask for several things in one email, then change their minds in the next:
+Patients ask for several things in one email, then change their minds in the next:
 
 > **Email 1:** "Please move my appointment to Friday and send me a copy of my invoice."
 > **Email 2:** "Actually, keep my original appointment. I still need the invoice."
 
-Most inbox tools read one message at a time, so the reschedule request either lingers as stale work or the invoice gets lost. This assistant keeps a **request ledger** for each thread instead:
+Tools that read one message at a time lose the invoice or keep rescheduling. This assistant keeps a **request ledger** for each thread:
 
 | Request | Status | Team | Evidence |
 |---|---|---|---|
 | Move appointment to Friday | **withdrawn** | Scheduling | "Actually, keep my original appointment." |
 | Send invoice | **open** | Billing | "...send me a copy of my invoice." |
 
-If a staff member then drafts *"We've moved your appointment to Friday"*, the reply checker blocks it, because the patient withdrew that request.
+If staff then draft *"We've moved your appointment to Friday"*, the reply checker blocks it.
 
-![Staff dashboard](docs/dashboard.png)
+![Staff dashboard](docs/figures/dashboard.png)
 
-> ⚠️ **Prototype on fictional data.** No login, encryption or access control yet. Do not use with real patient information. See [Before a pilot](#before-a-pilot).
+> ⚠️ **Research prototype on fictional data.** No login, encryption or access control. Do not use with real patient information. See [Responsible use](#responsible-use).
 
----
+## Highlights
 
-## Features
+- **The model only proposes; the code decides.** The AI suggests typed changes (`CREATE` / `MODIFY` / `WITHDRAW` / `FULFIL`), each quoting the email. Five deterministic rules accept or reject them. Anything unresolved goes to a person.
+- **Evidence for every decision.** Each request links to the sentence that created or changed it.
+- **Reply checker.** It flags missed requests, confirmations of withdrawn requests, wrong dates and clinical advice before a reply is sent.
+- **Clinical safety first.** Clinical content goes to a nurse queue and is never auto-answered.
+- **A rigorous evaluation kit.** It includes a synthetic data generator with a held-out split, bootstrap confidence intervals, McNemar tests, ablations, a controlled error-injection study and an inter-annotator agreement toolkit.
 
-- **Request ledger per thread.** Every patient request is tracked as `open`, `withdrawn`, `fulfilled` or `needs_review`, with full history.
-- **Evidence for every decision.** Each request links to the exact sentence that created or changed it, highlighted in the email.
-- **Deterministic validator.** The AI only *proposes* changes, and plain code accepts or rejects each one (rules below).
-- **Retry, then human review.** A rejected change gets one retry with the validator's feedback. If it fails again it goes to a review queue and is never silently dropped.
-- **Clinical red-flag screen.** Symptoms, medication questions and urgent signs go to a nurse queue and are never auto-answered.
-- **Reply checker.** Before sending, it flags:
-  - open requests the reply ignores
-  - replies that act on withdrawn requests
-  - wrong dates
-  - anything that reads like clinical advice
-- **Closing the loop.** A staff reply such as "attached is your invoice" marks the matching request fulfilled.
-- **Staff corrections are logged.** Overrides of status, category or owner become evaluation and training data.
-- **Team task board.** Open work grouped by Scheduling, Billing, Medical Records, Front Desk and Clinical.
-- **Pluggable AI.** Runs offline with no key, or with Claude or GPT.
+## Results at a glance
 
-## Architecture
+On 200 held-out synthetic threads with the offline model ([details](docs/EVALUATION.md)):
 
-```mermaid
-flowchart TD
-    A[Incoming patient email] --> B[Strip quotes & signature]
-    B --> C{Clinical red-flag screen}
-    C -- clinical content --> N[Nurse review queue]
-    C --> D[AI proposes ledger ops<br/>CREATE · MODIFY · WITHDRAW · FULFIL]
-    D --> E{Validator}
-    E -- rejected twice --> H[Human review queue]
-    E -- valid --> F[(Request ledger)]
-    F --> G[Routing table → team]
-    F --> S[Staff dashboard]
-    S --> R{Reply checker}
-    R -- issues --> S
-    R -- ok --> O[Send reply]
-    O -. re-enters as a staff message .-> B
+| Approach | End-to-end F1 [95% CI] | Threads fully right | Open requests missed |
+|---|---|---|---|
+| **Ledger (this repo)** | **0.797** [0.76, 0.83] | **55.0%** | **15.1%** |
+| Latest email only | 0.416 [0.35, 0.48] | 22.5% | 61.4% |
 
-    classDef ai fill:#eeedfe,stroke:#534ab7,color:#26215c
-    classDef code fill:#e1f5ee,stroke:#0f6e56,color:#04342c
-    classDef human fill:#faece7,stroke:#993c1d,color:#4a1b0c
-    class D ai
-    class B,C,E,F,G,R code
-    class N,H human
-```
+When model errors are injected at a 30% rate, the validator cuts wrong changes applied without a human alert from **0.53 to 0.28 per thread**. It rejects **100%** of hallucinated requests. It can't catch omissions or changes aimed at the wrong valid request, by design.
 
-**Design principle: the model reads language, the code makes decisions.** The language model is used in one place: turning a new message into proposed ledger operations. Validation, routing, state transitions and reply checks are ordinary, testable code.
+![Error injection](docs/figures/error-injection.png)
 
-### Validator rules
-
-Every operation the model proposes must pass all of these before the ledger changes:
-
-1. **Evidence is verbatim.** The quoted sentence must appear in the new message, ignoring case and whitespace.
-2. **Only patients create or withdraw.** Staff messages can only fulfil.
-3. **The target exists.** `MODIFY`, `WITHDRAW` and `FULFIL` must reference a real request in this thread.
-4. **Transitions are legal.** For example, a withdrawn request can't be fulfilled, and a fulfilled request is never silently reopened.
-5. **No duplicates.** A `CREATE` that matches an existing open request is rejected.
-
-This follows the *propose, then validate deterministically* pattern from recent dialogue-state-tracking research. Most model errors are local (a wrong ID, an invented quote) and can be caught without understanding the language.
+> These figures come from an offline rule-based extractor and template emails. They validate the pipeline and give a baseline, not real-world accuracy. Real-model and human-written-data results are in progress (see [Roadmap](#roadmap)).
 
 ## Quick start
+
+**In the browser (no install):** click **Open in Colab** above, then choose `Runtime → Run all`.
+
+**Locally:**
 
 ```bash
 git clone https://github.com/<you>/clinic-inbox.git
 cd clinic-inbox
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+make setup        # or: pip install -r requirements.txt
+make test         # 33 tests
+make run          # dashboard at http://127.0.0.1:8000 → "Reset & load demo"
 ```
 
-Open <http://127.0.0.1:8000> and click **Load demo threads**. API docs are at <http://127.0.0.1:8000/docs>.
-
-### Choosing the AI backend
-
-| `LLM_PROVIDER` | Needs | Notes |
-|---|---|---|
-| `mock` *(default)* | nothing | Offline pattern matcher. Free and deterministic, used by the tests. Not a real language model. |
-| `anthropic` | `ANTHROPIC_API_KEY`, `pip install anthropic` | Model set by `ANTHROPIC_MODEL` |
-| `openai` | `OPENAI_API_KEY`, `pip install openai` | Model set by `OPENAI_MODEL` |
-
-Copy `.env.example` to `.env` and fill it in. `.env` is git-ignored, so never commit keys.
-
-Set `AUDIT=1` to also re-read the whole thread after each message and flag any disagreement with the ledger. This costs extra model calls.
-
-## Evaluation
-
-The repo includes a synthetic data generator and a statistical benchmark:
+**With a real model:**
 
 ```bash
-python -m eval.synth --n 200 --pool dev  --seed 11 --out data/synth_dev.json
-python -m eval.synth --n 200 --pool test --seed 22 --out data/synth_test.json
-python -m eval.benchmark --data data/synth_test.json      # add --limit 100 with a paid model
-python -m eval.report                                      # writes eval/report.html
+pip install anthropic                    # or: pip install openai
+export LLM_PROVIDER=anthropic            # or: openai
+export ANTHROPIC_API_KEY=...             # or: OPENAI_API_KEY=...
+make run
 ```
 
-The generator builds threads from scenarios: multiple requests, withdrawals, date changes, staff completions, receipt confirmations, restatements and thanks-only replies. It adds quoted text and signatures as noise. Labels are exact by construction.
+Copy `.env.example` to `.env` to keep settings. `.env` is git-ignored, so never commit keys.
 
-There are two independent **phrasing pools**:
-- **dev**: phrasings visible during development
-- **test**: held-out phrasings that are never used to tune the system
+## How it works
 
-### Results: held-out pool, offline mock model
-
-200 threads · 408 emails · 432 gold requests · 95% bootstrap CIs (2,000 resamples)
-
-| Approach | End-to-end F1 | Precision | Recall | Macro F1 | Thread accuracy | Missed open requests |
-|---|---|---|---|---|---|---|
-| **Ledger (this app)** | **0.797** [0.76, 0.83] | 0.841 | 0.757 | 0.815 | **55.0%** | **15.1%** |
-| Latest email only | 0.416 [0.35, 0.48] | 0.696 | 0.296 | 0.462 | 22.5% | 61.4% |
-
-- **Paired difference in end-to-end F1:** +0.38 (95% CI +0.33 to +0.44).
-- **Thread accuracy (exact McNemar test):** the ledger was right on 65 threads where the baseline was wrong, and never the reverse (p ≈ 5×10⁻²⁰).
-- **Reply checker** (scored against the correct ledger): stops bad replies with F1 0.96, with 21 false alarms out of 200 correct replies.
-- **Known weakness:** withdrawals in unfamiliar wording. 52% of closed requests still showed as open.
-- **Unseen wording:** F1 drops from 0.975 on dev phrasings to 0.797 on held-out ones.
-
-> **How to read these numbers:** they come from the offline pattern matcher, not a language model, and template emails are cleaner than real patient writing. They show the evaluation pipeline works and give a baseline. They are not an estimate of real-world accuracy. Run the benchmark with a real model, ideally on threads written by someone else, before quoting results.
-
-**Metrics:**
-- **End-to-end F1:** a request counts as correct only when its category, key detail (date or document) and final status all match.
-- **Find F1:** the same match, ignoring status.
-- **Thread accuracy:** the whole final list is right.
-- **Missed-open rate:** requests the patient still needs that aren't shown as open.
-- **Stale rate:** withdrawn or completed requests still shown as open.
-
-## Project structure
-
-```
-app/
-├── models.py          # Message, Request, LedgerOp, statuses, categories
-├── parsing.py         # quote & signature stripping
-├── redflag.py         # clinical content screen (replace with the clinic's agreed list)
-├── llm.py             # mock / Anthropic / OpenAI backends + prompts
-├── ledger.py          # validator + applying ops  ← core logic
-├── reply_check.py     # reply coverage & consistency checks, template acknowledgement
-├── routing.py         # category → team table
-├── service.py         # pipeline orchestration, staff actions, views
-├── db.py              # SQLite storage
-├── main.py            # FastAPI app
-└── static/index.html  # staff dashboard
-data/
-├── threads.json       # 15 hand-written labelled threads
-├── synth_dev.json     # generated, dev phrasings
-└── synth_test.json    # generated, held-out phrasings
-eval/
-├── run_eval.py        # quick comparison on hand-written threads
-├── synth.py           # synthetic thread generator
-├── benchmark.py       # P/R/F1, bootstrap CIs, McNemar
-└── report.py          # HTML report
-tests/test_core.py     # 21 tests
+```mermaid
+flowchart LR
+    A[New email] --> B[Strip quotes & signature]
+    B --> C{Red-flag screen}
+    C -- clinical --> N[Nurse queue]
+    C --> D[Model proposes ops]
+    D --> E{Validator}
+    E -- rejected after retry --> H[Human review]
+    E -- valid --> F[(Request ledger)]
+    F --> R{Reply checker}
+    R -- ok --> S[Staff sends reply]
+    S -. re-read as a message .-> B
 ```
 
-## API
+A change is applied only if:
+1. its quote appears verbatim in the email
+2. only patients create or withdraw requests
+3. its target request exists
+4. the status change is legal
+5. it isn't a duplicate
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/api/threads` | Create a thread from the first patient email |
-| `POST` | `/api/threads/{id}/messages` | Add an incoming message (`sender`: `patient` / `staff`) |
-| `GET` | `/api/threads/{id}` | Messages, ledger, review items, flags |
-| `GET` | `/api/threads/{id}/draft` | Template acknowledgement for open requests |
-| `POST` | `/api/threads/{id}/check-reply` | Run the reply checker |
-| `POST` | `/api/threads/{id}/reply` | Check, then send (blocked unless `override: true`, which is logged) |
-| `PATCH` | `/api/requests/{id}` | Staff correction: status, owner or category |
-| `GET` | `/api/inbox` · `/api/board` | Inbox list · open work by team |
+[Architecture details →](docs/ARCHITECTURE.md)
 
-## Testing
+## Reproduce the experiments
 
 ```bash
-pytest -q
+make all            # regenerate data, benchmark, ablations, error injection, report
 ```
 
-The tests cover:
-- quote stripping
-- red-flag levels
-- each validator rule
-- retry and review-queue behaviour
-- parsing of real model output
-- every reply-checker issue
-- staff corrections
-- an end-to-end API flow
+| Command | Output |
+|---|---|
+| `make data` | `data/synth_dev.json`, `data/synth_test.json` |
+| `make bench` | `results/benchmark_synth_*.json` |
+| `make experiments` | `results/ablation.json`, `results/noise.json`, `results/noise.png` |
+| `make report` | `results/report.html` |
+
+Human-written test data: see [`annotation/`](annotation/) and `python -m eval.annotation --help`.
+
+## Repository structure
+
+```
+clinic-inbox/
+├── app/                      # the assistant
+│   ├── models.py             # data types: Request, LedgerOp, statuses, categories
+│   ├── parsing.py            # quote & signature stripping
+│   ├── redflag.py            # clinical content screen
+│   ├── llm.py                # mock / Anthropic / OpenAI backends + prompts
+│   ├── ledger.py             # validator + applying ops  ← core logic
+│   ├── reply_check.py        # reply checker + template acknowledgement
+│   ├── routing.py            # category → team
+│   ├── service.py            # pipeline, retry/review, staff actions
+│   ├── db.py                 # SQLite storage
+│   ├── main.py               # FastAPI app
+│   └── static/index.html     # staff dashboard
+├── eval/                     # evaluation code
+│   ├── synth.py              # synthetic thread generator (dev / held-out pools)
+│   ├── benchmark.py          # P/R/F1, bootstrap CIs, McNemar
+│   ├── experiments.py        # ablations + error injection
+│   ├── annotation.py         # inter-annotator agreement, human test sets
+│   ├── run_eval.py           # quick check on hand-written threads
+│   └── report.py             # HTML report
+├── data/                     # demo + synthetic threads (fictional)
+├── results/                  # generated results, figures, report
+├── annotation/               # writer brief, labelling guide, templates, examples
+├── notebooks/                # self-contained Colab notebook
+├── docs/                     # architecture, evaluation, API, figures
+├── tests/                    # 33 tests
+├── .github/workflows/        # CI: tests + benchmark smoke run
+├── Makefile · requirements.txt · LICENSE · CITATION.cff
+```
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md): pipeline, validator rules, reply checker, data model
+- [Evaluation](docs/EVALUATION.md): data, metrics, statistics, all results, limitations
+- [API](docs/API.md): HTTP endpoints
+- [Annotation guide](annotation/LABELLING_GUIDE.md): how to build an independent test set
 
 ## Roadmap
 
-- [ ] Benchmark with Claude / GPT, including the whole-thread baseline
-- [ ] Independently written test threads, including Singlish and mixed-language emails
-- [ ] Gmail test-inbox connector (push notifications, watch renewal, deduplication)
-- [ ] Mock scheduling adapter with `accepted / completed / failed` write states
-- [ ] Staff login, roles and audit view
-- [ ] PostgreSQL and a job queue for production
+- [x] Validated request ledger, reply checker, staff dashboard
+- [x] Synthetic benchmark with held-out split, ablations, error injection
+- [ ] Real-model benchmark (Claude / GPT) including a whole-thread baseline, with cost and latency
+- [ ] ~150 independently written, double-labelled threads (Singlish, typos, implied requests)
+- [ ] Gmail test-inbox connector
+- [ ] Scheduling adapter with `accepted / completed / failed` write states
+- [ ] Auth, roles, audit view; PostgreSQL
 
-## Before a pilot
+## Responsible use
 
-This is administrative-workflow software and must not give clinical advice. Before using it with real patient data:
+This is administrative-workflow software and must not give clinical advice. Before any use with real patient data:
+- add authentication, access control and encryption
+- agree data handling with the clinic under Singapore's PDPA
+- check where your AI provider processes and keeps data
+- replace the red-flag list with the clinic's own escalation rules
+- keep staff approval on every outgoing message
 
-- Add authentication, role-based access and encryption at rest.
-- Agree data handling with the clinic under Singapore's **PDPA**.
-- Confirm where your AI provider processes and stores data, and its retention terms.
-- Replace `app/redflag.py` with the clinic's own escalation wording and path.
-- Keep staff approval on every outgoing message.
-- If the scope ever extends to clinical prioritisation or advice, review **MOH AIHGle 2.0** and HSA software medical-device guidance.
+If the scope ever extends to clinical prioritisation, review MOH's AIHGle 2.0 and HSA software medical-device guidance.
+
+## Citation
+
+If you use this work, please cite it using [`CITATION.cff`](CITATION.cff) (GitHub shows a "Cite this repository" button).
 
 ## License
 
-Add a license of your choice (e.g. MIT) before publishing.
+[MIT](LICENSE)
